@@ -1,3 +1,7 @@
+Version 1 setup, design, and benchmark interpretation: see [RUNNING.md](RUNNING.md).
+
+---
+
 Objective: The aim of this assignment is to provide students with hands-on experience in designing and implementing a basic cloud computing application. By creating a simple single-server key-value store, students will understand the fundamental operations underpinning more complex distributed storage systems.
 
 Description:

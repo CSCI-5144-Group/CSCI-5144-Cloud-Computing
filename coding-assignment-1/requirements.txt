@@ -1,0 +1,5 @@
+# Python 3.11 baseline; use requirements-lock.txt to reproduce all dependency versions.
+fastapi==0.115.12
+uvicorn==0.34.2
+requests==2.32.5
+pydantic==2.14.1
