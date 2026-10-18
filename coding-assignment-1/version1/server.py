@@ -1,4 +1,5 @@
-"""Version 1: an in-memory, single-process key-value store.
+"""
+Version 1: a single-server key-value store.
 
 Run: python server.py
 Data is lost when the process exits. Use exactly one server process.
@@ -51,7 +52,9 @@ def put_key(key: str, body: PutRequest):
         existed = key in store
         store[key] = body.value
         logger.info("PUT | key=%r | %s", key, "UPDATED" if existed else "CREATED")
-    return JSONResponse({"key": key, "value": body.value}, status_code=200 if existed else 201)
+    return JSONResponse(
+        {"key": key, "value": body.value}, status_code=200 if existed else 201
+    )
 
 
 @app.delete("/{key}")
@@ -69,7 +72,9 @@ def delete_key(key: str):
 async def invalid_request(request: Request, exc: RequestValidationError):
     logger.info("%s | path=%r | BAD_REQUEST", request.method, request.url.path)
     return JSONResponse(
-        {"error": 'Invalid request. Write body must be JSON of the form {"value": ...}'},
+        {
+            "error": 'Invalid request. Write body must be JSON of the form {"value": ...}'
+        },
         status_code=400,
     )
 
