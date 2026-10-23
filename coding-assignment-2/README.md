@@ -23,4 +23,7 @@ Entry Point: Define a command or entry point so that the server application star
 Steps:
 
 Create a directory for your Docker context. Place your key-value store
-Important Note: This assignment may help you in your coding assignment 2.
+
+Important Note:
+
+This assignment may help you in your coding assignment
