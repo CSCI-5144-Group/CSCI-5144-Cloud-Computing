@@ -1,0 +1,8 @@
+**
+!requirements-lock.txt
+!routing/
+!routing/*.py
+!management/
+!management/*.py
+!storage/
+!storage/*.py
