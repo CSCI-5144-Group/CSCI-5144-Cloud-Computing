@@ -54,7 +54,7 @@ class RequestGate:
 
 
 class KVService:
-    # Start with persisted membership when the router process restarts.
+    # Initialize routing using the state owned by this router process.
     def __init__(self, state, client, urls):
         self.state = state
         self.client = client
@@ -63,7 +63,6 @@ class KVService:
         self.ring = None
         self.gate = RequestGate()
         self.key_locks = [Lock() for _ in range(256)]
-        self.restoring = self.state.get_setting("restore") is not None
         saved = self.state.get_setting("membership")
         if saved is not None:
             unknown = set(saved) - self.urls.keys()
@@ -79,10 +78,10 @@ class KVService:
         nodes = {name: Node(self.client.identify(self.urls[name]), self.urls[name])
                  for name in names}
         if len({node.identity for node in nodes.values()}) != len(nodes):
-            raise ServiceError(409, "Node names must refer to distinct storage volumes")
+            raise ServiceError(409, "Node names must refer to distinct storage processes")
         return nodes
 
-    # Persist the verified membership before routing requests through the new ring.
+    # Save the verified membership before routing requests through the new ring.
     def publish(self, nodes):
         ring = HashRing(nodes)
         self.state.set_setting("membership", {name: node.identity for name, node in nodes.items()})
@@ -90,12 +89,10 @@ class KVService:
         logger.info("Membership active: nodes=%s replication_factor=%d",
                     ",".join(sorted(nodes)), ring.replication_factor)
 
-    # Keep same-key operations serialized, including journal retries.
+    # Keep same-key operations serialized, including pending-write retries.
     @contextmanager
     def key_operation(self, key):
         with self.gate.request(), self.key_locks[hash_value(key) % len(self.key_locks)]:
-            if self.restoring:
-                raise ServiceError(503, "Restore in progress")
             yield
 
     # Give the existing API a clear error for keys with an unfinished write.
@@ -123,13 +120,13 @@ class KVService:
             record = self.read_record(key)
             return record if record is not None and not record.deleted else None
 
-    # Apply the same journaled record idempotently to each owner.
+    # Apply the same pending record idempotently to each owner.
     def replicate(self, record):
         for name in self.ring.owners(record.key):
             self.client.write(self.nodes[name], record)
         self.state.finish_write(record)
 
-    # Verify owners before opening a new journal entry to preserve reads on outages.
+    # Verify owners before opening a new pending entry to preserve reads on outages.
     def mutate(self, key, value, *, deleted=False):
         with self.key_operation(key):
             self.check_pending(key)
@@ -151,7 +148,7 @@ class KVService:
                 raise ServiceError(503, "Write may complete after replica recovery") from exc
             return existed
 
-    # Retry unfinished writes with their original revision after a failure or restart.
+    # Retry unfinished writes with their original revision after a temporary node failure.
     def retry_pending(self):
         for candidate in self.state.pending_records():
             try:

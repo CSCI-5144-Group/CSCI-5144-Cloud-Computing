@@ -1,16 +1,15 @@
-"""Internal HTTP service for one persistent KV node."""
+"""Internal HTTP service for one in-memory KV node."""
 
 import logging
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from storage.records import Record
-from storage.sqlite_store import ConflictingRevision, NodeStorage
+from storage.memory_store import ConflictingRevision, NodeStorage
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -19,10 +18,10 @@ class KeyRequest(BaseModel):
     key: str
 
 
-# Open this node's independent database before serving requests.
+# Create this process's independent store before serving requests.
 @asynccontextmanager
 async def lifespan(app):
-    app.state.storage = NodeStorage(Path(os.environ.get("NODE_DB", "data/node.sqlite3")))
+    app.state.storage = NodeStorage()
     logger.info("Storage node ready: name=%s identity=%s", os.environ.get("NODE_NAME", "local"),
                 app.state.storage.identity)
     yield
@@ -31,7 +30,7 @@ async def lifespan(app):
 routes = APIRouter()
 
 
-# Reject normal requests routed to an unenrolled replacement volume.
+# Reject normal requests routed to an unenrolled node process.
 def enrolled_storage(request: Request, x_node_identity: Annotated[str, Header()]) -> NodeStorage:
     storage = request.app.state.storage
     if storage.identity != x_node_identity:

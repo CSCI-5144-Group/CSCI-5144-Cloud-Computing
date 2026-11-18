@@ -32,7 +32,7 @@ def wait_for_router(base_url, nodes):
                 ready = response.json()
                 if (isinstance(ready, dict) and ready.get("nodes") == nodes
                         and ready.get("replication_factor") == min(2, len(nodes))
-                        and ready.get("restoring") is False):
+                        and ready.get("pending_writes") == 0):
                     return
                 status = f"Unexpected router status: {ready}"
             except (requests.RequestException, ValueError) as exc:
@@ -41,7 +41,7 @@ def wait_for_router(base_url, nodes):
     raise RuntimeError(f"Router did not become ready for {nodes}: {status}")
 
 
-# Use a disposable Compose project and persist results outside its volumes.
+# Use a disposable Compose project and persist results outside its containers.
 @contextmanager
 def cluster(nodes, run_id, port):
     project = f"kvbench-{run_id}-{len(nodes)}"
@@ -62,7 +62,7 @@ def cluster(nodes, run_id, port):
         subprocess.run([*cmd, "logs", "--tail", "25"], check=False, cwd=ROOT, env=env)
         raise
     finally:
-        cleanup = subprocess.run([*cmd, "down", "--volumes"], check=completed, cwd=ROOT, env=env)
+        cleanup = subprocess.run([*cmd, "down"], check=completed, cwd=ROOT, env=env)
         if cleanup.returncode:
             print(f"Compose cleanup failed for {project}", file=sys.stderr)
 

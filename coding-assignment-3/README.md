@@ -1,9 +1,9 @@
 # Assignment 3 Distributed Key-Value Store
 
 Assignment 3 keeps the public KV API from Assignment 2. A single HTTP router
-splits keys across one to three SQLite storage nodes using a consistent hash
+splits keys across one to three in-memory storage nodes using a consistent hash
 ring. There is one copy with one node and two copies on distinct nodes with
-two or three nodes. Each node has an independent Docker volume.
+two or three nodes. Each node owns an independent in-memory dictionary.
 
 ## Run with Docker Compose
 
@@ -15,11 +15,10 @@ INITIAL_NODES=a docker compose -p kv3 up -d --build router node-a
 docker compose -p kv3 logs -f router node-a
 ```
 
-The initial node list applies to a fresh router volume. After enrollment the
-router uses the saved membership on restart. To start with all three nodes on
-fresh volumes, run `docker compose -p kv3 up -d --build` with the default
-`INITIAL_NODES=a,b,c`. For a second deployment, choose another project name and
-set `ROUTER_PORT` to an unused port.
+The initial node list is applied when the router starts. To start with all
+three nodes, run `docker compose -p kv3 up -d --build` with the default
+`INITIAL_NODES=a,b,c`. For a second deployment, choose another project name
+and set `ROUTER_PORT` to an unused port.
 
 The router publishes port 8080 on localhost. Storage nodes communicate over the
 Compose network. The administrative endpoints are intended for this local
@@ -57,36 +56,35 @@ curl -fsS http://127.0.0.1:8080/alice
 
 Wait for a new node to log that it is ready before enrolling it. To remove a
 node, submit the shorter list while all current nodes are online, then stop
-its container. The current implementation retains old copies on disk after
+its container. The current implementation retains old copies in memory after
 moving keys. The router reads data only from the active owners.
 
 ### Use custom node names
 
 The supplied Compose file defines A, B, and C. The router accepts up to three
 configured node IDs and resolves them through `NODE_URLS`. For a local
-deployment with custom IDs, start distinct storage processes and give each
-its own SQLite file. For example, run the following in separate terminals:
+deployment with custom IDs, start distinct storage processes and assign each a different listening port. For example, run the following in separate terminals:
 
 ```sh
-NODE_NAME=d NODE_DB=data/d.sqlite3 python -m uvicorn storage.node:app --port 8081
-NODE_NAME=e NODE_DB=data/e.sqlite3 python -m uvicorn storage.node:app --port 8082
-NODE_NAME=f NODE_DB=data/f.sqlite3 python -m uvicorn storage.node:app --port 8083
+NODE_NAME=d python -m uvicorn storage.node:app --port 8081
+NODE_NAME=e python -m uvicorn storage.node:app --port 8082
+NODE_NAME=f python -m uvicorn storage.node:app --port 8083
 ```
 
-Then start a fresh router using that deployment:
+Then start a router using those empty nodes:
 
 ```sh
 NODE_URLS='{"d":"http://127.0.0.1:8081","e":"http://127.0.0.1:8082","f":"http://127.0.0.1:8083"}' \
-INITIAL_NODES=d ROUTER_DB=data/custom-router.sqlite3 \
+INITIAL_NODES=d \
   python -m uvicorn routing.app:app --port 8080
 curl -fsS -X PUT http://127.0.0.1:8080/_admin/membership \
   -H 'Content-Type: application/json' -d '{"nodes":["d","e","f"]}'
 ```
 
-On a fresh router, omitting `INITIAL_NODES` enrolls the entire configured list.
+On router startup, omitting `INITIAL_NODES` enrolls the entire configured list.
 Membership changes can select any configured ID while the router is running.
 To change the address map itself, update `NODE_URLS` and restart the router.
-Keep the IDs and volumes for existing members when changing their addresses.
+Restart the storage nodes together with the router when changing startup configuration.
 
 ## Failover and replacement
 
@@ -95,62 +93,36 @@ Keep the IDs and volumes for existing members when changing their addresses.
 - A write or delete is acknowledged only after every assigned copy confirms
   it. If a copy is already unavailable at preflight time, the write returns
   HTTP 503 and the prior value remains readable from a healthy copy.
-- If a failure interrupts a journaled write, it returns HTTP 503 and may
+- If a failure interrupts a pending write, it returns HTTP 503 and may
   complete in the background. Reads and new writes for that key return 503
   while the write is pending. Retries reuse the original revision.
-- Restarting a node with its original volume brings back its existing
-  identity and data. A blank replacement must be enrolled manually. To repair
-  it, bring the other nodes online, start the replacement at the same service
-  address, and call `POST /_admin/repair/{node}`. The router reconstructs and
-  verifies its records before trusting the new identity.
+- Each node restart clears its data and generates a new process identity.
+  Reads can use its surviving replica. Bring the other nodes online and call
+  `POST /_admin/repair/{node}` before the restarted node resumes normal service.
+  The router copies and verifies its records before enrolling the new identity.
+- Router membership, revision counters, and pending writes also live in memory.
+  When restarting the router, restart all storage nodes to initialize a fresh
+  cluster. Startup rejects nodes containing records because the previous
+  coordinator's pending writes and membership have been lost.
 - Deletes are stored as revisioned tombstones so a repair or migration
   preserves the deletion. Tombstones are retained.
 
 For a three-node failover demo, `alice` is assigned to nodes B and C in that
-order. After writing it, stop B and read it again. The router logs a read from
-C. Restart B to demonstrate recovery with its original volume.
+order. Write it, stop B, and read it from C. Restart B and repair it from the
+surviving replica. Wait for B to log that it is ready before calling repair.
 
 ```sh
 docker compose -p kv3 stop node-b
 curl -fsS http://127.0.0.1:8080/alice
 docker compose -p kv3 up -d node-b
-```
-
-To demonstrate a *lost* volume on a disposable three-node deployment, export a
-backup first, then remove only the stopped B container and its volume. This
-deletes that volume permanently.
-
-```sh
-docker compose -p kv3 stop node-b
-docker compose -p kv3 rm -f node-b
-docker volume rm kv3_node-b
-docker compose -p kv3 up -d node-b
 # Wait for node-b to log that it is ready.
 curl -fsS -X POST http://127.0.0.1:8080/_admin/repair/b
 ```
 
-## Backup and restore
-
-An export requires the active nodes to be available and the write journal to
-be settled. The JSON contains one copy of each logical record, including
-tombstones and the revision clock. Keep a copy outside the cluster's volumes.
-
-```sh
-mkdir -p data
-curl -fsS http://127.0.0.1:8080/_admin/backup -o data/kv3-backup.json
-
-ROUTER_PORT=8090 INITIAL_NODES=a,b docker compose -p kv3-restore \
-  up -d --build router node-a node-b
-curl -fsS http://127.0.0.1:8090/_admin/status
-curl -fsS -X POST http://127.0.0.1:8090/_admin/restore \
-  -H 'Content-Type: application/json' --data-binary @data/kv3-backup.json
-curl -fsS http://127.0.0.1:8090/alice
-```
-
-Use a fresh router and fresh node volumes for restore. If it is interrupted,
-retry with the same snapshot. The router keeps normal KV traffic closed until
-the restored placement has been verified. The snapshot can be restored to a
-different number of nodes from the original cluster.
+Data lasts only while the processes holding it remain alive. A single-node
+restart loses all data. With replicas, repair a restarted node before stopping
+the other owner of its keys. To reset the entire cluster, stop all services
+with `docker compose -p kv3 down` and then start them together.
 
 ## Run the benchmark
 
@@ -162,7 +134,7 @@ python -m benchmark
 ```
 
 The benchmark builds the router and node image once. It runs separate Docker
-Compose projects with fresh volumes for one, two, and three nodes, and cleans
+Compose projects with fresh processes for one, two, and three nodes, and cleans
 up each test project after its turn. It uses port 18080 by default. Set
 `--port` if that port is in use. The default workload is 1,000 keys, eight
 workers, and three trials per configuration. For a quick deployment check,
@@ -188,15 +160,58 @@ the cost of adding replication as well as the change in node count.
 | Directory | Responsibility |
 | --- | --- |
 | `routing/` | Public API, router startup, consistent hashing, failover, internal HTTP client |
-| `management/` | Administrative routes, membership changes, replica repair, backup and restore |
-| `storage/` | Node HTTP service, shared record format, SQLite storage and the router journal |
+| `management/` | Administrative routes, membership changes, replica repair |
+| `storage/` | Node HTTP service, shared record format, in-memory node storage and router state |
 | `benchmark/` | Compose sweep, timed workloads, summary report and charts |
-| `tests/` | Routing, API, persistence and benchmark-output tests |
+| `tests/` | Routing, API, in-memory state and benchmark-output tests |
 | `results/` | [Functional verification summary](results/verification.md) and benchmark runs |
 
 Run the tests with `python -m unittest discover -s tests -v` after installing
-`requirements-lock.txt`. They exercise actual HTTP handlers and SQLite files
+`requirements-lock.txt`. They exercise actual HTTP handlers and isolated memory stores
 with an in-process transport that can simulate node outages.
 
 The router is a single process. Container replicas on one host share that
-host's failure domain. A copied backup can restore the data after host loss.
+host's failure domain. All data and coordination state are volatile.
+
+## Request-path behavior
+
+Node reads, version checks, and mutations use a lock-protected dictionary.
+Batch mutations validate every record before publishing any update, so a
+conflicting revision leaves the entire batch unapplied. Same-key operations
+are serialized by the router, and successful writes still require confirmation
+from every assigned copy. The retry worker handles interrupted writes while
+the router process is alive.
+
+The results in dated folders from earlier revisions describe those revisions.
+Run the benchmark again to measure this implementation on the same Docker host.
+
+## Implementation decisions and challenges
+
+The Assignment 2 HTTP API is reused at the public router. The consistent hash
+ring uses SHA-256 and 128 virtual positions per physical node. Walking
+clockwise chooses a primary and then a distinct replica. The configured
+membership supports one to three nodes with arbitrary IDs.
+
+The initial design stored node records and router coordination state in
+SQLite. The current design uses lock-protected dictionaries to remove disk
+transactions from the request path. Each mutation still has a revision, and
+the router serializes operations on the same key. Deep copies prevent JSON
+values returned to callers from modifying stored records accidentally.
+
+A write can reach one owner before the other fails. The router keeps that
+mutation pending, blocks new requests for its key, and retries the same
+revision. This handles temporary node failures while the router stays alive.
+It does not recover pending operations after router process loss.
+
+Changing placement while requests are running can cause missing or stale
+reads. Maintenance drains active requests and rejects new KV requests,
+collects authoritative records, installs and verifies the target copies,
+and then publishes the new ring. Deletes carry tombstones so older copies
+cannot reintroduce deleted values during repair.
+
+The supplied benchmark measures stable configurations on fresh processes.
+The functional tests separately exercise live membership changes. Interpret
+scaling results alongside replication: the one-node setup stores one copy,
+while the two- and three-node setups store two copies. All configurations
+share the same Docker host and single router, so measured scaling depends on
+those shared resources as well as the storage nodes.

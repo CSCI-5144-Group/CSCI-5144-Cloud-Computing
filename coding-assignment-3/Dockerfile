@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements-lock.txt
 COPY routing/ routing/
 COPY management/ management/
 COPY storage/ storage/
-RUN addgroup -S kv && adduser -S -G kv kv && mkdir /data && chown kv:kv /data
+RUN addgroup -S kv && adduser -S -G kv kv
 USER kv
 
 EXPOSE 8080

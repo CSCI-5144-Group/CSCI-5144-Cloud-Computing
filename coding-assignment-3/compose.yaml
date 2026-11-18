@@ -12,39 +12,21 @@ services:
     environment:
       INITIAL_NODES: "${INITIAL_NODES:-a,b,c}"
       NODE_URLS: '{"a":"http://node-a:8080","b":"http://node-b:8080","c":"http://node-c:8080"}'
-      ROUTER_DB: /data/router.sqlite3
       PROGRESS_INTERVAL: "${PROGRESS_INTERVAL:-5}"
     ports:
       - "127.0.0.1:${ROUTER_PORT:-8080}:8080"
-    volumes:
-      - router:/data
 
   node-a:
     <<: *node
     environment:
       NODE_NAME: a
-      NODE_DB: /data/node.sqlite3
-    volumes:
-      - node-a:/data
 
   node-b:
     <<: *node
     environment:
       NODE_NAME: b
-      NODE_DB: /data/node.sqlite3
-    volumes:
-      - node-b:/data
 
   node-c:
     <<: *node
     environment:
       NODE_NAME: c
-      NODE_DB: /data/node.sqlite3
-    volumes:
-      - node-c:/data
-
-volumes:
-  router:
-  node-a:
-  node-b:
-  node-c:

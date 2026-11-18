@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from management.maintenance import Maintenance, Snapshot
+from management.maintenance import Maintenance
 
 routes = APIRouter(prefix="/_admin")
 
@@ -30,7 +30,6 @@ def status(maintenance: Admin):
         "nodes": sorted(service.nodes),
         "replication_factor": service.ring.replication_factor,
         "pending_writes": service.state.pending_count(),
-        "restoring": service.restoring,
     }
 
 
@@ -44,15 +43,3 @@ def update_membership(body: MembershipRequest, maintenance: Admin):
 @routes.post("/repair/{node}")
 def repair_node(node: str, maintenance: Admin):
     return maintenance.repair(node)
-
-
-# Return a portable snapshot that the caller can save outside the cluster.
-@routes.get("/backup")
-def export_backup(maintenance: Admin):
-    return maintenance.backup()
-
-
-# Import a snapshot through the durable restore workflow.
-@routes.post("/restore")
-def restore_backup(body: Snapshot, maintenance: Admin):
-    return maintenance.restore(body)

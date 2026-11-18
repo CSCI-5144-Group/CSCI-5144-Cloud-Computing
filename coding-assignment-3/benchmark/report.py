@@ -66,7 +66,7 @@ def write_report(output, rows, settings, failures):
         f"- Host: {settings['host']}",
         f"- Workload: {settings['keys']} keys, {settings['value_bytes']} ASCII bytes per value, "
         f"{settings['workers']} concurrent clients, {settings['trials']} planned trials per configuration.",
-        "- Each configuration starts on fresh volumes. An untimed seed PUT and verification GET "
+        "- Each configuration starts on fresh processes. An untimed seed PUT and verification GET "
         "prepare the dataset. Timed PUT updates existing keys. Timed GET verifies the latest values.",
         "- Throughput counts successful operations per second of wall time. Latencies are "
         "client-observed. Each result is the median of the corresponding trial metric. "

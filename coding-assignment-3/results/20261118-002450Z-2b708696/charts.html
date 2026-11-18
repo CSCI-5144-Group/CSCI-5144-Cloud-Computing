@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV Store Benchmark</title>
+<style>
+body { margin: 2rem auto; padding: 0 1rem; max-width: 65rem; font: 16px system-ui, sans-serif; color: #14232c; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1rem; }
+section { border: 1px solid #c5d0d6; border-radius: .5rem; padding: 0 1rem .25rem; }
+h2 { font-size: 1.15rem; }
+ul { list-style: none; padding: 0; }
+li { display: grid; grid-template-columns: 4em minmax(3em, 1fr) 7em; gap: .5em; align-items: center; margin: .6em 0; }
+.track { display: block; background: #e5edf0; min-height: .75em; border-radius: .3em; overflow: hidden; }
+.bar { display: block; min-height: .75em; background: #176c70; }
+strong { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+<h1>KV Store Benchmark</h1>
+<p>Median of valid trials. Compare bar lengths within each chart.</p>
+<main><section><h2>PUT throughput</h2><ul><li><span>1 node</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>766 ops/s</strong></li><li><span>2 nodes</span><span class="track"><span class="bar" style="width:69.74078%"></span></span><strong>534 ops/s</strong></li><li><span>3 nodes</span><span class="track"><span class="bar" style="width:70.98425%"></span></span><strong>543 ops/s</strong></li></ul></section><section><h2>PUT p99 latency</h2><ul><li><span>1 node</span><span class="track"><span class="bar" style="width:62.39821%"></span></span><strong>15.91 ms</strong></li><li><span>2 nodes</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>25.50 ms</strong></li><li><span>3 nodes</span><span class="track"><span class="bar" style="width:88.66653%"></span></span><strong>22.61 ms</strong></li></ul></section><section><h2>GET throughput</h2><ul><li><span>1 node</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>1,465 ops/s</strong></li><li><span>2 nodes</span><span class="track"><span class="bar" style="width:99.90255%"></span></span><strong>1,464 ops/s</strong></li><li><span>3 nodes</span><span class="track"><span class="bar" style="width:97.39756%"></span></span><strong>1,427 ops/s</strong></li></ul></section><section><h2>GET p99 latency</h2><ul><li><span>1 node</span><span class="track"><span class="bar" style="width:78.99196%"></span></span><strong>9.32 ms</strong></li><li><span>2 nodes</span><span class="track"><span class="bar" style="width:78.12572%"></span></span><strong>9.21 ms</strong></li><li><span>3 nodes</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>11.79 ms</strong></li></ul></section></main><p><a href="trials.csv">Per-trial data</a></p>

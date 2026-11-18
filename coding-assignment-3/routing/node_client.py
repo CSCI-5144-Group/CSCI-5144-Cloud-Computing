@@ -48,14 +48,14 @@ class NodeClient:
         except (requests.RequestException, ValueError) as exc:
             raise NodeUnavailable(f"{method} {url}: {exc}") from exc
 
-    # Discover the identity of the database currently behind an address.
+    # Discover the identity of the process currently behind an address.
     def identify(self, url):
         return self.request("GET", f"{url}/health")["identity"]
 
-    # Check that a write target is reachable and still uses its enrolled database.
+    # Check that a write target is reachable and still uses its enrolled process.
     def check(self, node):
         if self.identify(node.url) != node.identity:
-            raise NodeConflict(f"{node.url}: volume must be enrolled before use")
+            raise NodeConflict(f"{node.url}: process must be enrolled before use")
 
     # Fetch a record from an enrolled node.
     def read(self, node, key):

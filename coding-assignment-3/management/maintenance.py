@@ -1,34 +1,13 @@
-"""Manage placement changes, replacement volumes, and portable snapshots."""
+"""Manage placement changes and replacement nodes."""
 
 import logging
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from routing.hash_ring import HashRing
 from routing.kv_service import ServiceError
-from storage.records import Record, same_json, same_record
+from storage.records import same_record
 
 logger = logging.getLogger("uvicorn.error")
 BATCH_SIZE = 500
-
-
-class Snapshot(BaseModel):
-    model_config = ConfigDict(strict=True, extra="forbid")
-
-    format_version: int = Field(ge=1, le=1)
-    clock: int = Field(ge=0, le=2**63 - 1)
-    records: list[Record]
-
-    # Reject ambiguous revisions and invalid clocks before modifying any node.
-    @model_validator(mode="after")
-    def validate_records(self):
-        keys = {record.key for record in self.records}
-        revisions = {record.revision for record in self.records}
-        if len(keys) != len(self.records) or len(revisions) != len(self.records):
-            raise ValueError("Snapshot contains duplicate keys or revisions")
-        if max(revisions, default=0) > self.clock:
-            raise ValueError("Snapshot clock must cover every record revision")
-        return self
 
 
 class Maintenance:
@@ -38,10 +17,10 @@ class Maintenance:
         self.client = service.client
         self.state = service.state
 
-    # Prevent a partial normal write from becoming part of a committed snapshot.
+    # Finish pending mutations before changing their assigned owners.
     def require_settled(self):
-        if self.service.restoring or self.state.pending_count():
-            raise ServiceError(503, "Finish the restore or pending writes before this operation")
+        if self.state.pending_count():
+            raise ServiceError(503, "Finish pending writes before this operation")
 
     # Collect the newest record from its old owners, skipping stale non-owner data.
     def collect(self, *, skip=None):
@@ -68,7 +47,7 @@ class Maintenance:
             if expected is None or record.revision > expected.revision or (
                 record.revision == expected.revision and not same_record(record, expected)
             ):
-                raise ServiceError(409, "Target contains unexpected data; use a clean volume")
+                raise ServiceError(409, "Target contains unexpected data; restart the target node to clear its data")
 
     # Copy records in batches and confirm the target holds the intended revisions.
     def install(self, name, node, records):
@@ -113,19 +92,17 @@ class Maintenance:
     # Rebuild a replacement from surviving owners without trusting its old identity.
     def repair(self, name):
         with self.service.gate.exclusive():
-            if self.service.restoring:
-                raise ServiceError(503, "Restore in progress")
             if name not in self.service.nodes:
                 raise ServiceError(404, "Node is not in the active membership")
             if self.service.ring.replication_factor < 2:
-                raise ServiceError(409, "A single-node store requires a backup for replacement")
+                raise ServiceError(409, "A single-node store has no surviving replica for replacement")
             logger.info("Replica repair started: node=%s", name)
             replacement = self.service.discover([name])[name]
             if replacement == self.service.nodes[name]:
-                raise ServiceError(409, "The original volume is already enrolled")
+                raise ServiceError(409, "The original process is already enrolled")
             nodes = dict(self.service.nodes, **{name: replacement})
             if len({node.identity for node in nodes.values()}) != len(nodes):
-                raise ServiceError(409, "The replacement must use its own volume")
+                raise ServiceError(409, "The replacement must be a distinct process")
             latest = self.collect(skip=name)
             needed = {key: record for key, record in latest.items()
                       if name in self.service.ring.owners(key)}
@@ -134,37 +111,3 @@ class Maintenance:
             self.service.publish(nodes)
             logger.info("Replica repair finished: node=%s records=%d", name, len(needed))
         return {"node": name, "records": len(needed)}
-
-    # Export a single logical copy of every key, including its delete history marker.
-    def backup(self):
-        with self.service.gate.exclusive():
-            self.require_settled()
-            logger.info("Backup started")
-            latest = self.collect()
-            snapshot = Snapshot(format_version=1, clock=self.state.get_setting("clock"),
-                                records=[latest[key] for key in sorted(latest)])
-            logger.info("Backup ready: records=%d revision=%d", len(latest), snapshot.clock)
-            return snapshot
-
-    # Keep traffic closed until a fresh or interrupted restore verifies every copy.
-    def restore(self, snapshot):
-        with self.service.gate.exclusive():
-            payload = snapshot.model_dump(mode="json")
-            previous = self.state.get_setting("restore")
-            if previous is not None and not same_json(previous, payload):
-                raise ServiceError(409, "Retry with the same snapshot to resume the restore")
-            if previous is None:
-                if self.state.get_setting("clock") != 0 or any(
-                    self.client.records(node) for node in self.service.nodes.values()
-                ):
-                    raise ServiceError(409, "Restore requires a fresh router and empty nodes")
-                self.state.set_setting("restore", payload)
-                self.service.restoring = True
-            logger.info("Restore started: records=%d revision=%d",
-                        len(snapshot.records), snapshot.clock)
-            self.place(self.service.nodes, snapshot.records)
-            self.state.finish_restore(snapshot.clock)
-            self.service.restoring = False
-            logger.info("Restore finished: records=%d", len(snapshot.records))
-        return {"records": len(snapshot.records), "revision": snapshot.clock}
-

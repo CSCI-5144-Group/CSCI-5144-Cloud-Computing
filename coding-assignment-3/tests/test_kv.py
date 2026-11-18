@@ -1,10 +1,11 @@
-"""Exercise placement, the write journal, and the multi-process HTTP service."""
+"""Exercise placement, the pending writes, and the multi-process HTTP service."""
 
 import asyncio
 import csv
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,10 +23,11 @@ from storage import node
 
 from routing.hash_ring import HashRing
 from routing.kv_service import KVService, ServiceError
-from routing.node_client import Node, NodeClient, NodeUnavailable
+from routing.node_client import Node, NodeUnavailable
 from storage.router_state import RouterState
 
-from storage.sqlite_store import NodeStorage
+from storage.memory_store import ConflictingRevision, NodeStorage
+from storage.records import Record
 
 
 class FaultingClient:
@@ -59,30 +61,57 @@ class StateTests(unittest.TestCase):
             counts[primary] += 1
         self.assertTrue(all(750 < count < 1250 for count in counts.values()), counts)
 
-    # A partial mutation remains private and replays after the router restarts.
-    def test_journal_replays_partial_write_after_restart(self):
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / "router.sqlite3"
-            urls = {name: name for name in "ab"}
-            client = FaultingClient()
-            service = KVService(RouterState(path), client, urls)
-            service.publish({name: Node(name, name) for name in urls})
-            first, second = service.ring.owners("alice")
-            client.failed = second
-            with self.assertRaisesRegex(ServiceError, "may complete"):
-                service.mutate("alice", None)
-            pending = service.state.pending_for("alice")
-            self.assertEqual(client.data[first]["alice"], pending)
+    # Retain pending writes across a temporary outage in the same router process.
+    def test_retry_partial_write(self):
+        client = FaultingClient()
+        service = KVService(RouterState(), client, {name: name for name in "ab"})
+        service.publish({name: Node(name, name) for name in "ab"})
+        first, second = service.ring.owners("alice")
+        client.failed = second
+        with self.assertRaisesRegex(ServiceError, "may complete"):
+            service.mutate("alice", None)
+        pending = service.state.pending_for("alice")
+        self.assertEqual(client.data[first]["alice"], pending)
+        with self.assertRaisesRegex(ServiceError, "awaiting replica"):
+            service.get("alice")
+        client.failed = None
+        service.retry_pending()
+        self.assertEqual(client.data[second]["alice"], pending)
+        self.assertIsNone(service.state.pending_for("alice"))
 
-            restarted = KVService(RouterState(path), client, urls)
-            with self.assertRaisesRegex(ServiceError, "awaiting replica"):
-                restarted.get("alice")
-            client.failed = None
-            restarted.retry_pending()
+    # Preserve unique revisions under concurrency and reset state on process restart.
+    def test_concurrent_revisions_and_volatile_state(self):
+        state = RouterState()
+        with ThreadPoolExecutor(max_workers=4) as workers:
+            records = list(workers.map(
+                lambda index: state.begin_write(str(index), index, False), range(24),
+            ))
+        self.assertEqual(len({record.revision for record in records}), 24)
+        self.assertEqual(state.pending_count(), 24)
+        state.finish_write(records[0])
+        self.assertIsNone(state.pending_for(records[0].key))
+        self.assertEqual(RouterState().pending_count(), 0)
 
-            self.assertEqual(client.data[second]["alice"], pending)
-            self.assertEqual(restarted.get("alice"), pending)
-            self.assertIsNone(restarted.state.pending_for("alice"))
+    # An invalid batch must not partially apply, and stored JSON values stay isolated.
+    def test_memory_store_atomic_batches_and_restart(self):
+        storage = NodeStorage()
+        original = Record(key="alice", value={"items": [1]}, revision=2)
+        storage.merge([original])
+        original.value["items"].append(2)
+        read = storage.read("alice")
+        self.assertEqual(read.value, {"items": [1]})
+        read.value["items"].append(3)
+        storage.merge([Record(key="alice", value={"items": [1]}, revision=2)])
+        with self.assertRaises(ConflictingRevision):
+            storage.merge([
+                Record(key="bob", value=2, revision=3),
+                Record(key="alice", value=0, revision=1),
+            ])
+        self.assertIsNone(storage.read("bob"))
+        self.assertEqual(storage.read("alice").value, {"items": [1]})
+        fresh = NodeStorage()
+        self.assertNotEqual(storage.identity, fresh.identity)
+        self.assertIsNone(fresh.read("alice"))
 
 
 # Exercise the real ASGI routes without needing network access or extra libraries.
@@ -108,7 +137,7 @@ async def asgi_request(app, method, path, body=None, headers=None):
 
 
 class HTTPTests(unittest.IsolatedAsyncioTestCase):
-    # Swap only the HTTP transport and give every node its own SQLite database.
+    # Swap only the HTTP transport and give every node its own memory store.
     async def asyncSetUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -142,15 +171,14 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch("routing.node_client.requests.Session", InProcessSession))
 
     async def start(self, name, *, suffix="", initial="a", configured="abc"):
-        path = self.folder / f"{name}{suffix}.sqlite3"
         if name != "router":
             app = FastAPI()
             app.include_router(node.routes)
-            app.state.storage = NodeStorage(path)
+            app.state.storage = NodeStorage()
             self.nodes[name] = app
             return
         env = {
-            "ROUTER_DB": str(path), "PROGRESS_INTERVAL": "0.05",
+            "PROGRESS_INTERVAL": "0.05",
             "NODE_URLS": json.dumps({key: f"http://{key}" for key in configured}),
         }
         with patch.dict(os.environ, env):
@@ -178,8 +206,8 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, status, response.text)
         return response.json()
 
-    # Verify live requests across scale changes, a failed node, and a fresh restore.
-    async def test_scale_failover_repair_and_restore(self):
+    # Verify live requests across scale changes, node failure, and replica repair.
+    async def test_scale_failover_and_repair(self):
         for name in "abc":
             await self.start(name)
         await self.start("router")
@@ -213,62 +241,28 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.stop(ring.owners(first)[1])
         self.assertEqual((await self.call("GET", f"/{first}"))["value"], "saved")
         await self.call("GET", f"/{deleted}", 404)
-        await self.start(ring.owners(first)[1])
-        await self.stop("router")
-        await self.start("router", initial="a")
-        self.assertEqual((await self.call("GET", "/_admin/status"))["nodes"], ["a", "b", "c"])
-
+        replica = ring.owners(first)[1]
+        await self.start(replica)
+        await self.call("POST", f"/_admin/repair/{replica}")
         await self.call("PUT", "/_admin/membership", json={"nodes": ["a", "b"]})
         self.assertEqual((await self.call("GET", f"/{first}"))["value"], "saved")
-        snapshot = await self.call("GET", "/_admin/backup")
-        self.assertTrue(any(record["deleted"] for record in snapshot["records"]))
-        await self.call("POST", "/_admin/restore", 409, json=snapshot)
-        await self.stop_all()
-
-        await self.start("a", suffix="-restored")
-        await self.start("router", suffix="-restored")
-        await self.call("POST", "/_admin/restore", json=snapshot)
-        self.assertEqual((await self.call("GET", f"/{first}"))["value"], "saved")
-        self.assertEqual((await self.call("GET", f"/{unaffected}"))["value"], "still writable")
         self.assertIsNone((await self.call("GET", "/null-key"))["value"])
         await self.call("GET", f"/{deleted}", 404)
         await self.call("PUT", f"/{first}", json={"value": "new revision"})
-        self.assertGreater((await self.call("GET", "/_admin/backup"))["clock"], snapshot["clock"])
         with self.assertLogs(logging.getLogger("uvicorn.error"), level="INFO") as logs:
             await asyncio.sleep(0.15)
         self.assertTrue(any("Progress: active_nodes" in line for line in logs.output))
 
 
-    # A partial restore stays hidden across router restart and can replay its batches.
-    async def test_interrupted_restore_resumes_after_restart(self):
-        for name in "ab":
-            await self.start(name)
-        await self.start("router", initial="a,b")
-        snapshot = {
-            "format_version": 1, "clock": 7,
-            "records": [{"key": "alice", "revision": 7, "deleted": False, "value": True}],
-        }
-        merge = NodeClient.merge_records
-
-        def fail_second_node(client, target, records):
-            if target.url == "http://b":
-                raise NodeUnavailable("Simulated failure during restore")
-            merge(client, target, records)
-
-        with patch.object(NodeClient, "merge_records", fail_second_node):
-            await self.call("POST", "/_admin/restore", 503, json=snapshot)
-        await self.stop("router")
+    # Removed management endpoints must no longer accept snapshot operations.
+    async def test_removed_snapshot_endpoints(self):
+        await self.start("a")
         await self.start("router")
-        self.assertTrue((await self.call("GET", "/_admin/status"))["restoring"])
-        await self.call("GET", "/alice", 503)
-        altered = {**snapshot, "records": [{**snapshot["records"][0], "value": 1}]}
-        await self.call("POST", "/_admin/restore", 409, json=altered)
-        await self.call("POST", "/_admin/restore", json=snapshot)
-        self.assertIs((await self.call("GET", "/alice"))["value"], True)
-        self.assertFalse((await self.call("GET", "/_admin/status"))["restoring"])
+        await self.call("GET", "/_admin/backup", 404)
+        await self.call("POST", "/_admin/restore", 404, json={})
+        self.assertNotIn("restoring", await self.call("GET", "/_admin/status"))
 
-
-    # Prove that membership uses configured names and survives router restart.
+    # Verify custom names and reject router restart against existing node data.
     async def test_custom_node_names(self):
         for name in "def":
             await self.start(name)
@@ -279,9 +273,15 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
         await self.call("PUT", "/_admin/membership", json={"nodes": ["d", "e", "f"]})
         await self.call("PUT", "/_admin/membership", 400, json={"nodes": ["d", "a"]})
         await self.stop("router")
+        with self.assertRaisesRegex(ValueError, "restart all storage nodes"):
+            await self.start("router", initial="d", configured="def")
+        self.router_context = None
+        await self.stop_all()
+        for name in "def":
+            await self.start(name)
         await self.start("router", initial="d", configured="def")
-        self.assertEqual((await self.call("GET", "/_admin/status"))["nodes"], list("def"))
-        self.assertEqual((await self.call("GET", "/alice"))["value"], "saved")
+        self.assertEqual((await self.call("GET", "/_admin/status"))["nodes"], ["d"])
+        await self.call("GET", "/alice", 404)
 
     # Verify the measured workload and output files without persisting test timings.
     async def test_benchmark_workload_and_reports(self):

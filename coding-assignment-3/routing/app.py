@@ -4,10 +4,8 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
 from collections import Counter
 from contextlib import asynccontextmanager
-from pathlib import Path
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 
@@ -28,7 +26,7 @@ LOCAL_URLS = {"a": "http://127.0.0.1:8081", "b": "http://127.0.0.1:8082",
 
 
 class Progress:
-    # Keep request status counters independent from routing and persistence.
+    # Keep request status counters independent from routing.
     def __init__(self):
         self.counts = Counter()
         self.lock = Lock()
@@ -44,7 +42,7 @@ class Progress:
             return dict(sorted(self.counts.items()))
 
 
-# Recover existing routing state or enroll empty nodes on the first boot.
+# Enroll empty storage processes before accepting traffic.
 def start_service():
     urls = json.loads(os.environ.get("NODE_URLS", json.dumps(LOCAL_URLS)))
     if not isinstance(urls, dict) or not 1 <= len(urls) <= 3 or any(
@@ -53,7 +51,7 @@ def start_service():
     ):
         raise ValueError("NODE_URLS must map up to three node names to HTTP URLs")
     service = KVService(
-        RouterState(Path(os.environ.get("ROUTER_DB", "data/router.sqlite3"))),
+        RouterState(),
         NodeClient(), {name: url.rstrip("/") for name, url in urls.items()},
     )
     if service.ring is None:
@@ -64,7 +62,7 @@ def start_service():
             try:
                 nodes = service.discover(names)
                 if any(service.client.records(node) for node in nodes.values()):
-                    raise ValueError("New router requires empty nodes; restore from a backup")
+                    raise ValueError("Router state was reset; restart all storage nodes before starting a new cluster")
                 service.publish(nodes)
                 break
             except NodeUnavailable as exc:
@@ -72,8 +70,7 @@ def start_service():
                     raise
                 logger.info("Waiting for initial nodes: %s", exc)
                 sleep(1)
-    logger.info("Router ready: nodes=%s restoring=%s",
-                ",".join(sorted(service.nodes)), service.restoring)
+    logger.info("Router ready: nodes=%s", ",".join(sorted(service.nodes)))
     return service
 
 
@@ -89,12 +86,9 @@ def recovery_loop(service, stopped):
 # Keep reporting status even when the router has no incoming requests.
 def progress_loop(service, progress, stopped, interval):
     while not stopped.wait(interval):
-        try:
-            logger.info("Progress: active_nodes=%s responses=%s pending_writes=%d restoring=%s",
-                        ",".join(sorted(service.nodes)), progress.summary(),
-                        service.state.pending_count(), service.restoring)
-        except sqlite3.Error:
-            logger.exception("Could not report journal progress")
+        logger.info("Progress: active_nodes=%s responses=%s pending_writes=%d",
+                    ",".join(sorted(service.nodes)), progress.summary(),
+                    service.state.pending_count())
 
 
 # Run a single Uvicorn worker so same-key and maintenance locks share one owner.
