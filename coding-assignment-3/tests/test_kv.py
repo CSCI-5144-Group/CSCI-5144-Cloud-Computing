@@ -3,9 +3,11 @@
 import asyncio
 import csv
 import json
+import importlib.util
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +19,7 @@ from fastapi import FastAPI
 from requests import ConnectionError, Response
 
 from benchmark.__main__ import run_workload
-from benchmark.report import write_report
+from benchmark.report import summarize, write_report
 from routing import app as router
 from storage import node
 
@@ -285,8 +287,20 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
 
     # Verify the measured workload and output files without persisting test timings.
     async def test_benchmark_workload_and_reports(self):
-        args = SimpleNamespace(keys=8, workers=2, trials=1, value_bytes=16)
+        args = SimpleNamespace(keys=8, workers=2, trials=1, value_bytes=16,
+                               duration=0.08, warmup=0.03)
         rows, failures = [], []
+        source = Path(__file__).resolve().parents[2] / "coding-assignment-2/server.py"
+        spec = importlib.util.spec_from_file_location("assignment2_baseline", source)
+        baseline = importlib.util.module_from_spec(spec)
+        with patch("logging.basicConfig"):
+            spec.loader.exec_module(baseline)
+        self.nodes["baseline"] = baseline.app
+        with patch.object(baseline.logger, "info"):
+            await asyncio.to_thread(
+                run_workload, "http://baseline", 1, args, rows, failures, system="assignment2",
+            )
+        del self.nodes["baseline"]
         for count in (1, 2, 3):
             names = "abc"[:count]
             suffix = f"-benchmark-{count}"
@@ -296,13 +310,25 @@ class HTTPTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(run_workload, "http://router", count, args, rows, failures)
             await self.stop_all()
         self.assertFalse(failures)
-        self.assertEqual(len(rows), 6)
-        self.assertTrue(all(row.successful == 8 and row.p99_ms > 0 for row in rows))
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(
+            row.successful == row.attempts and row.attempts > 8
+            and row.elapsed_seconds >= args.duration and row.p99_ms > 0 for row in rows
+        ))
+        different_load = replace(rows[0], workers=4, throughput_ops_s=123.0)
+        groups = summarize([*rows, different_load])
+        isolated = next(row for row in groups if row["workers"] == 4
+                        and row["system"] == "assignment2" and row["method"] == "PUT")
+        self.assertEqual(isolated["completed"], 1)
+        self.assertEqual(isolated["throughput_ops_s"], 123.0)
         output = self.folder / "reports"
         write_report(output, rows, dict(vars(args), host="test only"), failures)
         with (output / "trials.csv").open() as file:
-            self.assertEqual(len(list(csv.DictReader(file))), 6)
-        self.assertIn("| 3 | 2 | GET | 1 / 1 |", (output / "report.md").read_text())
+            self.assertEqual(len(list(csv.DictReader(file))), 8)
+        self.assertIn("| 2 | assignment3 | 3 | 2 | GET | 1 / 1 |", (output / "report.md").read_text())
+        self.assertIn("| 2 | assignment2 | 1 | 1 | PUT | 1 / 1 |",
+                      (output / "report.md").read_text())
+        self.assertIn("A2 · 1", (output / "charts.html").read_text())
         self.assertEqual((output / "charts.html").read_text().count("<section>"), 4)
 
 

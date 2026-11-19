@@ -133,27 +133,63 @@ python -m pip install -r requirements-lock.txt
 python -m benchmark
 ```
 
-The benchmark builds the router and node image once. It runs separate Docker
-Compose projects with fresh processes for one, two, and three nodes, and cleans
-up each test project after its turn. It uses port 18080 by default. Set
-`--port` if that port is in use. The default workload is 1,000 keys, eight
-workers, and three trials per configuration. For a quick deployment check,
-use `python -m benchmark --keys 30 --workers 3 --trials 1`.
+To compare Assignment 2 with all three Assignment 3 configurations, run:
 
-It seeds and verifies the same dataset in each configuration, then measures
-PUT updates and GET reads separately. After a measured phase, the runner
-prints the throughput and error count. It writes each run to a new folder
-under `results/`:
+```sh
+python -m benchmark --include-assignment2
+```
 
-- `report.md` has the summary and explains the workload and replication.
-- `trials.csv` has the raw results, including request failures.
-- `charts.html` plots throughput and p99 latency and opens without a server.
+The comparison uses the same client code and quiet operation logging for
+both assignments. The Assignment 2 container overrides its startup command
+to suppress its per-request INFO logs. The Assignment 3 benchmark overlay
+suppresses routine logs on the router and nodes. Both retain warnings and
+errors and use one Uvicorn worker per server. Regular deployments keep their
+existing progress logging.
 
-The report summarizes the median metrics from trials with no request errors.
-Use `--output` for a specific new folder. The output can be committed with
-the source for team review. One node writes one copy, and two or three nodes
-write two copies. A comparison from one to two nodes therefore includes
-the cost of adding replication as well as the change in node count.
+The default benchmark sweeps 8, 16, 32, and 64 concurrent clients, with 1,000
+keys and 128-byte ASCII values. Each PUT and GET phase has a two-second
+warm-up followed by ten measured seconds, repeated three times. Workers
+cycle through disjoint key partitions, so faster implementations complete
+more requests in the same time window. PUT updates existing keys, and GET
+verifies the latest values. Only complete request/response operations count.
+The elapsed time includes the final in-flight requests finishing after the
+deadline.
+
+For a short deployment check:
+
+```sh
+python -m benchmark --include-assignment2 --workers 8 --duration 1 --warmup 0.2 --trials 1
+```
+
+For the full comparison:
+
+```sh
+python -m benchmark --include-assignment2 --workers 8 16 32 64 --duration 10 --warmup 2 --trials 3
+```
+
+The full comparison needs about 20 minutes plus builds, startup, seeding and
+cleanup. It runs configurations sequentially on the same Docker host, with
+fresh processes for every implementation, node count, and client count.
+The client prints phase progress and the actual operation count, elapsed
+time, throughput and errors after each measured phase. The default published
+port is 18080; set `--port` if needed.
+
+Each run produces a new directory under `results/`:
+
+- `report.md` groups results by concurrent clients, implementation, node count and method.
+- `trials.csv` includes actual attempts and measured elapsed time for every phase.
+- `charts.html` compares throughput and p99 separately at each client count.
+
+The report uses the median of valid trial metrics. Trials with request
+errors remain in the raw data and are excluded from valid-trial medians.
+Use `--output` to choose a specific new folder.
+
+The comparison still includes routing, replication, synchronization and
+framework differences. One node stores one copy; two or three nodes store
+two copies. Increased concurrency can expose a throughput plateau but does
+not identify its cause. Inspect router, client and node resource usage when
+diagnosing a bottleneck. Existing dated results use the previous short,
+fixed-operation methodology and should be interpreted separately.
 
 ## Code layout and verification
 

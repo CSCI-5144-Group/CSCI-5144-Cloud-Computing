@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KV Store Benchmark</title>
+<style>
+body { margin: 2rem auto; padding: 0 1rem; max-width: 65rem; font: 16px system-ui, sans-serif; color: #14232c; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1rem; }
+section { border: 1px solid #c5d0d6; border-radius: .5rem; padding: 0 1rem .25rem; }
+h2 { font-size: 1.15rem; }
+ul { list-style: none; padding: 0; }
+li { display: grid; grid-template-columns: 4em minmax(3em, 1fr) 7em; gap: .5em; align-items: center; margin: .6em 0; }
+.track { display: block; background: #e5edf0; min-height: .75em; border-radius: .3em; overflow: hidden; }
+.bar { display: block; min-height: .75em; background: #176c70; }
+strong { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+<h1>KV Store Benchmark</h1>
+<p>Median of valid trials. A2 = Assignment 2. A3 = Assignment 3. The number is the KV node count. Compare bar lengths within each chart.</p>
+<main><section><h2>PUT throughput</h2><ul><li><span>A2 · 1</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>3,501 ops/s</strong></li><li><span>A3 · 1</span><span class="track"><span class="bar" style="width:21.50693%"></span></span><strong>753 ops/s</strong></li><li><span>A3 · 2</span><span class="track"><span class="bar" style="width:16.16538%"></span></span><strong>566 ops/s</strong></li><li><span>A3 · 3</span><span class="track"><span class="bar" style="width:15.96091%"></span></span><strong>559 ops/s</strong></li></ul></section><section><h2>PUT p99 latency</h2><ul><li><span>A2 · 1</span><span class="track"><span class="bar" style="width:19.17479%"></span></span><strong>4.10 ms</strong></li><li><span>A3 · 1</span><span class="track"><span class="bar" style="width:74.68406%"></span></span><strong>15.98 ms</strong></li><li><span>A3 · 2</span><span class="track"><span class="bar" style="width:99.02340%"></span></span><strong>21.19 ms</strong></li><li><span>A3 · 3</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>21.40 ms</strong></li></ul></section><section><h2>GET throughput</h2><ul><li><span>A2 · 1</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>3,925 ops/s</strong></li><li><span>A3 · 1</span><span class="track"><span class="bar" style="width:37.75534%"></span></span><strong>1,482 ops/s</strong></li><li><span>A3 · 2</span><span class="track"><span class="bar" style="width:38.09769%"></span></span><strong>1,495 ops/s</strong></li><li><span>A3 · 3</span><span class="track"><span class="bar" style="width:37.31162%"></span></span><strong>1,465 ops/s</strong></li></ul></section><section><h2>GET p99 latency</h2><ul><li><span>A2 · 1</span><span class="track"><span class="bar" style="width:42.06381%"></span></span><strong>4.11 ms</strong></li><li><span>A3 · 1</span><span class="track"><span class="bar" style="width:91.90295%"></span></span><strong>8.98 ms</strong></li><li><span>A3 · 2</span><span class="track"><span class="bar" style="width:92.67093%"></span></span><strong>9.05 ms</strong></li><li><span>A3 · 3</span><span class="track"><span class="bar" style="width:100.00000%"></span></span><strong>9.77 ms</strong></li></ul></section></main><p><a href="trials.csv">Per-trial data</a></p>

@@ -1,0 +1,15 @@
+services:
+  router:
+    build: ../../coding-assignment-2
+    image: coding-assignment-2:benchmark
+    # Override startup logging for the benchmark while reusing the original server.
+    command:
+      - python
+      - -c
+      - >-
+        import logging; import server; import uvicorn;
+        server.logger.setLevel(logging.WARNING);
+        uvicorn.run(server.app, host="0.0.0.0", port=8080, workers=1,
+        access_log=False, log_level="warning")
+    ports:
+      - "127.0.0.1:${ROUTER_PORT:-18080}:8080"

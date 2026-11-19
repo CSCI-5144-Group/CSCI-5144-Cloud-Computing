@@ -32,3 +32,15 @@ For 10,000 keys named `key-0` through `key-9999`, primary ownership was:
 
 These counts verify placement balance for this key set. Request load also
 depends on how frequently each key is accessed.
+
+## Unified benchmark verification
+
+The benchmark test now runs the original Assignment 2 HTTP handlers and all
+three Assignment 3 configurations through the shared duration-based workload.
+It verifies successful repeated operations beyond the initial dataset size,
+the measured duration, and report grouping that keeps different client counts
+separate. Warm-up requests are excluded from trial output.
+
+Both benchmark Compose configurations validate successfully. The new Docker
+comparison is pending because the Docker socket was unavailable during this
+verification. Previous dated measurements used the earlier methodology.
